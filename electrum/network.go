@@ -11,7 +11,7 @@ import (
 
 const (
 	ClientVersion   = "0.0.1"
-	ProtocolVersion = "1.0"
+	ProtocolVersion = "2.0"
 )
 
 var (
