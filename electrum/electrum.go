@@ -7,17 +7,19 @@ import (
 	"time"
 	"net"
 	"os"
+	"log"
+	"encoding/json"
 )
 
 const (
-	CONNECTION_TIMEOUT = 5 * time.Second
+	ConnectionTimeout = 5 * time.Second
 )
 type ServerAddress struct {
 	hostname string
 	portT int
 	portS int
 }
-var DEFAULT_SERVERS = []ServerAddress{
+var DefaultServers = []ServerAddress{
 	{hostname: "erbium1.sytes.net", portS: 50001, portT: 50002},
 	{hostname: "ecdsa.net", portS: 50001, portT: 110},
 	{hostname: "gh05.geekhosters.com", portS: 50001, portT: 50002},
@@ -43,9 +45,10 @@ func GetDefaultAvailableServer() ServerAddress{
 	var conn net.Conn = nil
 	var err error = nil
 	rand.Seed(time.Now().Unix())
-	defaultServer:= DEFAULT_SERVERS[rand.Intn(len(DEFAULT_SERVERS))]
+	var defaultServer ServerAddress
 	for conn == nil {
-		conn, err = net.DialTimeout("tcp",fmt.Sprintf("%v:%v",defaultServer.hostname,defaultServer.portT) , CONNECTION_TIMEOUT)
+		defaultServer= DefaultServers[rand.Intn(len(DefaultServers))]
+		conn, err = net.DialTimeout("tcp",fmt.Sprintf("%v:%v",defaultServer.hostname,defaultServer.portS) , ConnectionTimeout)
 	}
 	if err != nil {
 		fmt.Println("CANNOT ACCESS ANY OF DEFAULT SERVERS !!! CHECK CONNECTION")
@@ -57,7 +60,55 @@ func GetDefaultAvailableServer() ServerAddress{
 // FindElectrumServersIRC finds nodes to connect to by connecting to the Freenode #electrum channel.
 func FindElectrumPublicServers() ([]string, error) {
 	defaultServer:= GetDefaultAvailableServer()
+	peerChan, err := GetAvailablePeers(defaultServer)
+	if err != nil {
+		log.Fatal(err)
+	}
+	go func() {
+		for hash := range peerChan {
+			log.Printf("Address peer hash: %+v", hash)
+		}
+	}()
+
+	
+	if err != nil {
+		log.Fatal("JRPC error:", err)
+	}
 	fmt.Println(fmt.Sprintf("Electrum default server: %v",defaultServer.hostname ))
 	return []string{""},nil
 }
 
+func GetAvailablePeers(server ServerAddress) (<-chan string, error)  {
+	node := NewNode()
+	if err := node.ConnectTCP(fmt.Sprintf("%v:%v",server.hostname,server.portS)); err != nil {
+		log.Fatal(err)
+	}
+
+	resp := &basicResp{}
+	err := node.request("server.peers.subscribe", []string{}, resp)
+	if err != nil {
+		return nil, err
+	}
+	addressChan := make(chan string, 1)
+	if len(resp.Result) > 0 {
+		addressChan <- resp.Result
+	}
+	go func() {
+		for msg := range node.listenPush("server.peers.subscribe") {
+			resp := &struct {
+				Params []string `json:"params"`
+			}{}
+			if err := json.Unmarshal(msg, resp); err != nil {
+				log.Printf("ERR %s", err)
+				return
+			}
+			if len(resp.Params) != 2 {
+				log.Printf("address subscription params len != 2 %+v", resp.Params)
+				continue
+			}
+
+				addressChan <- resp.Params[1]
+		}
+	}()
+	return addressChan, err
+}
